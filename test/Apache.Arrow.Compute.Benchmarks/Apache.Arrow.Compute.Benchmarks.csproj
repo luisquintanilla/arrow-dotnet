@@ -12,6 +12,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Apache.Arrow\Apache.Arrow.csproj" />
     <ProjectReference Include="..\..\src\Apache.Arrow.Compute\Apache.Arrow.Compute.csproj" />
+    <Compile Include="..\Apache.Arrow.Compute.Tests\FixedSizeListAggregationReference.cs" Link="FixedSizeListAggregationReference.cs" />
   </ItemGroup>
 
 </Project>

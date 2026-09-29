@@ -34,16 +34,18 @@ namespace Apache.Arrow.Compute.Tests
 
         [Theory]
         [MemberData(nameof(Matrix))]
-        public void ReferenceAndGather_MatchStudyMatrix(int rows, int width, bool floats, bool nulls)
+        public void AllApproaches_MatchStudyMatrix(int rows, int width, bool floats, bool nulls)
         {
             using FixedSizeListArray input = FixedSizeListAggregationReference.Create(rows, width, floats, nulls);
             foreach (bool mean in new[] { false, true })
             {
                 using DoubleArray expected = FixedSizeListAggregationReference.Strided(input, mean);
                 using DoubleArray gathered = FixedSizeListAggregationReference.GatherThenKernel(input, mean);
+                using DoubleArray actual = mean ? input.MeanByComponent() : input.SumByComponent();
                 Assert.Equal(width, expected.Length);
                 Assert.Equal(0, expected.NullCount);
                 AssertSame(expected, gathered);
+                AssertSame(expected, actual);
             }
         }
 
@@ -55,13 +57,15 @@ namespace Apache.Arrow.Compute.Tests
             AssertReductions(input, new double?[] { 5, 18, null }, new double?[] { 2.5, 9, null });
         }
 
-        [Fact]
-        public void Reductions_RespectIndependentParentAndChildSlices()
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void Reductions_RespectIndependentParentAndChildSlices(bool floats)
         {
-            DoubleArray storage = Doubles(999, 999, 100, 100, 100, 4, null, 6, 1000, 2000, 3000, 7, 8, 9, 999);
-            using DoubleArray child = (DoubleArray)storage.SliceShared(2, 12);
+            Array storage = Numeric(floats, 999, 999, 100, 100, 100, 4, null, 6, 1000, 2000, 3000, 7, 8, 9, 999);
+            using Array child = storage.SliceShared(2, 12);
             storage.Dispose();
-            using var parent = new FixedSizeListArray(new FixedSizeListType(DoubleType.Default, 3), 4,
+            using var parent = new FixedSizeListArray(new FixedSizeListType(child.Data.DataType, 3), 4,
                 child, Bitmap(true, true, false, true), 1);
             using var input = (FixedSizeListArray)parent.SliceShared(1, 3);
             Assert.Equal(1, input.Offset);
@@ -92,16 +96,22 @@ namespace Apache.Arrow.Compute.Tests
                 new double?[] { 1.0 / 3, (double)float.MaxValue });
         }
 
-        [Fact]
-        public void Reductions_NonfiniteValuesFollowIeeeArithmetic()
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void Reductions_NonfiniteValuesFollowIeeeArithmetic(bool floats)
         {
-            using FixedSizeListArray input = Lists(5, new[] { true, true, false },
+            Array child = Numeric(floats,
                 double.NaN, double.PositiveInfinity, double.NegativeInfinity, double.PositiveInfinity, -0.0,
                 1, 2, 3, double.NegativeInfinity, -0.0,
                 999, double.NaN, double.NaN, 999, double.NaN);
+            using var input = new FixedSizeListArray(new FixedSizeListType(child.Data.DataType, 5), 3,
+                child, Bitmap(true, true, false), 1);
             AssertReductions(input,
                 new double?[] { double.NaN, double.PositiveInfinity, double.NegativeInfinity, double.NaN, 0 },
                 new double?[] { double.NaN, double.PositiveInfinity, double.NegativeInfinity, double.NaN, 0 });
+            using DoubleArray sum = input.SumByComponent();
+            Assert.Equal(0L, BitConverter.DoubleToInt64Bits(sum.GetValue(4).Value));
         }
 
         [Fact]
@@ -109,6 +119,106 @@ namespace Apache.Arrow.Compute.Tests
         {
             using FixedSizeListArray input = Lists(1, new[] { true, true }, double.MaxValue, double.MaxValue);
             AssertReductions(input, new double?[] { double.PositiveInfinity }, new double?[] { double.PositiveInfinity });
+        }
+
+        [Fact]
+        public void NullInput_IsRejected()
+        {
+            Assert.Throws<ArgumentNullException>(() => FixedSizeListAggregations.SumByComponent(null));
+            Assert.Throws<ArgumentNullException>(() => FixedSizeListAggregations.MeanByComponent(null));
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(-1)]
+        public void InvalidListWidths_AreRejectedAtConstruction(int width)
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => new FixedSizeListType(DoubleType.Default, width));
+        }
+
+        [Fact]
+        public void UnaddressableResultWidth_IsRejected()
+        {
+            using var input = new FixedSizeListArray(new FixedSizeListType(DoubleType.Default, int.MaxValue),
+                0, Doubles(), ArrowBuffer.Empty);
+            Assert.Throws<ArgumentException>(() => input.SumByComponent());
+            Assert.Throws<ArgumentException>(() => input.MeanByComponent());
+        }
+
+        [Fact]
+        public void UnsupportedChildren_AreRejected()
+        {
+            using Int32Array child = new Int32Array.Builder().Append(1).Append(2).Build();
+            using var input = new FixedSizeListArray(new FixedSizeListType(Int32Type.Default, 2), 1, child, ArrowBuffer.Empty);
+            Assert.Throws<NotSupportedException>(() => input.SumByComponent());
+            Assert.Throws<NotSupportedException>(() => input.MeanByComponent());
+        }
+
+        [Fact]
+        public void MismatchedChildType_IsRejected()
+        {
+            using var input = new FixedSizeListArray(new FixedSizeListType(FloatType.Default, 2), 1, Doubles(1, 2), ArrowBuffer.Empty);
+            Assert.Throws<ArgumentException>(() => input.SumByComponent());
+            Assert.Throws<ArgumentException>(() => input.MeanByComponent());
+        }
+
+        [Theory]
+        [InlineData(2, 0, 1, 3)]
+        [InlineData(1, 1, 1, 3)]
+        [InlineData(1, -1, 0, 2)]
+        [InlineData(-1, 0, 0, 2)]
+        [InlineData(1, 0, 2, 2)]
+        [InlineData(1, int.MaxValue, 0, 2)]
+        public void MalformedParentShapes_AreRejected(int rows, int offset, int nullCount, int childLength)
+        {
+            using var input = new FixedSizeListArray(new FixedSizeListType(DoubleType.Default, 2), rows,
+                Doubles(new double?[childLength]), Bitmap(true, false, true), nullCount, offset);
+            Assert.Throws<ArgumentException>(() => input.SumByComponent());
+            Assert.Throws<ArgumentException>(() => input.MeanByComponent());
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void ShortValidityBitmaps_AreRejected(bool childBitmap)
+        {
+            ArrowBuffer shortBitmap = new ArrowBuffer(new byte[1]);
+            DoubleArray child = childBitmap
+                ? new DoubleArray(new ArrowBuffer(new byte[9 * sizeof(double)]), shortBitmap, 9, 1, 0)
+                : Doubles(new double?[9]);
+            using var input = new FixedSizeListArray(new FixedSizeListType(DoubleType.Default, 1), 9, child,
+                childBitmap ? ArrowBuffer.Empty : shortBitmap, childBitmap ? 0 : 1);
+            Assert.Throws<ArgumentException>(() => input.SumByComponent());
+            Assert.Throws<ArgumentException>(() => input.MeanByComponent());
+        }
+
+        [Fact]
+        public void MissingValidityBitmap_IsRejected()
+        {
+            using var input = new FixedSizeListArray(new FixedSizeListType(DoubleType.Default, 2), 1,
+                Doubles(1, 2), ArrowBuffer.Empty, 1);
+            Assert.Throws<ArgumentException>(() => input.SumByComponent());
+            Assert.Throws<ArgumentException>(() => input.MeanByComponent());
+        }
+
+        [Fact]
+        public void ShortChildValueBuffer_IsRejected()
+        {
+            var child = new DoubleArray(new ArrowBuffer(new byte[sizeof(double)]), ArrowBuffer.Empty, 2, 0, 0);
+            using var input = new FixedSizeListArray(new FixedSizeListType(DoubleType.Default, 2), 1, child, ArrowBuffer.Empty);
+            Assert.Throws<ArgumentException>(() => input.SumByComponent());
+            Assert.Throws<ArgumentException>(() => input.MeanByComponent());
+        }
+
+        [Fact]
+        public void ResultOwnsBuffersIndependentlyOfInput()
+        {
+            FixedSizeListArray input = Lists(2, new[] { true, true }, 1, 2, 3, 4);
+            using DoubleArray result = input.SumByComponent();
+            Assert.Equal(1, ((DoubleArray)input.Values).GetValue(0));
+            input.Dispose();
+            Assert.Equal(4, result.GetValue(0));
+            Assert.Equal(6, result.GetValue(1));
         }
 
         internal static FixedSizeListArray Lists(int width, bool[] parents, params double?[] values)
@@ -130,6 +240,18 @@ namespace Apache.Arrow.Compute.Tests
             return builder.Build();
         }
 
+        private static Array Numeric(bool floats, params double?[] values)
+        {
+            if (!floats) return Doubles(values);
+            var builder = new FloatArray.Builder();
+            foreach (double? value in values)
+            {
+                if (value.HasValue) builder.Append((float)value.Value);
+                else builder.AppendNull();
+            }
+            return builder.Build();
+        }
+
         internal static ArrowBuffer Bitmap(params bool[] values)
         {
             var builder = new ArrowBuffer.BitmapBuilder();
@@ -144,8 +266,10 @@ namespace Apache.Arrow.Compute.Tests
                 using DoubleArray expected = Doubles(mean ? means : sums);
                 using DoubleArray reference = FixedSizeListAggregationReference.Strided(input, mean);
                 using DoubleArray gathered = FixedSizeListAggregationReference.GatherThenKernel(input, mean);
+                using DoubleArray actual = mean ? input.MeanByComponent() : input.SumByComponent();
                 AssertSame(expected, reference);
                 AssertSame(expected, gathered);
+                AssertSame(expected, actual);
             }
         }
 

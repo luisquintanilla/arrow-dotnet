@@ -37,6 +37,27 @@ pilot is **not** steady-state performance evidence.
 
 ## Reproducing the study
 
+## One-pass prototype
+
+`FixedSizeListAggregations.SumByComponent` and `MeanByComponent` accept only
+float/double fixed-size-list children and return caller-owned `DoubleArray`
+results. A generic scalar loop visits each row once, maintaining double sums and
+independent counts. It uses no generic-math/runtime-only features, so old targets
+share the same implementation. Inputs are not modified; results do not borrow
+their buffers. Existing primitive kernels are unchanged.
+
+Structural validation rejects type mismatches, unsupported children, negative
+lengths/offsets, out-of-range null counts, short/missing validity/value buffers,
+missing/mismatched children and children that cannot cover the parent slice.
+Widths must be positive and fit an addressable double result buffer. The
+`FixedSizeListType` constructor already disallows zero/negative widths.
+Arrow null-count metadata is trusted, not recomputed to audit every bitmap bit.
+Trailing child storage is permitted, as required for parent slicing.
+
+The benchmark `OnePassPrototype` includes its sums/counts arrays and result
+allocation/disposal. A null-free case avoids bitmap tests; validity cases retain
+the same per-component counts and parent exclusion semantics.
+
 Run commands only in an isolated experiment checkout. The actual evaluated SDK
 here is 10.0.112, inherited from an ancestor `global.json`. Tests are SDK-style,
 xUnit 2.9.3 on VSTest, with net8.0 and Windows net472 targets. Library targets

@@ -72,6 +72,12 @@ namespace Apache.Arrow.Compute.Benchmarks
         }
 
         [Benchmark]
+        public void OnePassPrototype()
+        {
+            using DoubleArray result = Mean ? _input.MeanByComponent() : _input.SumByComponent();
+        }
+
+        [Benchmark]
         public int GatherOnly()
         {
             DoubleArray[] components = FixedSizeListAggregationReference.Gather(_input);

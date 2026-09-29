@@ -83,6 +83,13 @@ namespace Apache.Arrow.Compute.Tests
         }
 
         [Fact]
+        public void Reductions_ValidZeroIsNotAnEmptyComponent()
+        {
+            using FixedSizeListArray input = Lists(3, new[] { true, true }, 1, 0, null, -1, 0, null);
+            AssertReductions(input, new double?[] { 0, 0, null }, new double?[] { 0, 0, null });
+        }
+
+        [Fact]
         public void Reductions_PromoteFloatBeforeAccumulation()
         {
             var builder = new FixedSizeListArray.Builder(FloatType.Default, 2);

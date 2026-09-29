@@ -13,6 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using System;
+using System.Collections.Generic;
 using Apache.Arrow.Compute.Testing;
 using BenchmarkDotNet.Attributes;
 
@@ -21,8 +23,19 @@ namespace Apache.Arrow.Compute.Benchmarks
     [MemoryDiagnoser]
     public class FixedSizeListAggregationBenchmarks
     {
-        [Params(1024, 65536)]
+        [ParamsSource(nameof(RowCounts))]
         public int Rows { get; set; }
+
+        public IEnumerable<int> RowCounts
+        {
+            get
+            {
+                string setting = Environment.GetEnvironmentVariable("ARROW_COMPONENT_LARGE_SWEEP");
+                if (setting == null) return new[] { 1024, 65536 };
+                if (setting == "1") return new[] { 1024, 65536, 1048576 };
+                throw new InvalidOperationException("ARROW_COMPONENT_LARGE_SWEEP must be unset or 1.");
+            }
+        }
 
         [Params(2, 3, 5, 16)]
         public int Width { get; set; }
